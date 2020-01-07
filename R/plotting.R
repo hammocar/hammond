@@ -1,6 +1,9 @@
-library(gridExtra)
-library(grid)
-library(tidyverse)
+#' @import gridExtra
+
+#' @import grid
+
+#' @import tibble
+
 
 #' Plot x vs. y with boxplots outside of each axis
 #'
