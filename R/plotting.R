@@ -126,3 +126,10 @@ xy_boxplots <- function(data, x, y, ...) {
                                                     c(1,1,1,1,2)))
 
 }
+
+# xy_boxplots(tibble(a = c(1,2,3),
+#                    b = c(4,5,6),
+#                    c = c(0,0,1)),
+#              x = "a",
+#             y = "b",
+#             color = "c")
