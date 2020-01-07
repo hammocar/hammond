@@ -1,10 +1,3 @@
-#' @import gridExtra
-
-#' @import grid
-
-#' @import tibble
-
-
 #' Plot x vs. y with boxplots outside of each axis
 #'
 #' @param data  A dataframe with the columns "x" and "y" (numeric) to be plotted.
@@ -16,18 +9,6 @@
 #' @export
 #'
 #' @examples
-# a<-rnorm(100, 20, 5)
-# b<-rpois(100, 50)
-# c<-rbernoulli(100,.7)
-# data<-tibble(a = a,
-#              b = b,
-#              c = c)
-# xy_boxplots(data,
-#             x = "a",
-#             y = "b",
-#             color = c)
-#
-
 xy_boxplots <- function(data, x, y, ...) {
 
   data$x <- unlist(data[, x])
@@ -136,3 +117,13 @@ xy_boxplots <- function(data, x, y, ...) {
 #              x = "a",
 #             y = "b",
 #             color = "c")
+
+
+
+#' @import gridExtra
+
+#' @import grid
+
+#' @import tibble
+
+
