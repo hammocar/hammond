@@ -108,9 +108,6 @@ xy_boxplots <- function(data, x, y, ...) {
                                                     c(1,1,1,1,2),
                                                     c(1,1,1,1,2),
                                                     c(1,1,1,1,2)))
-
-}
-
 # xy_boxplots(tibble(a = c(1,2,3),
 #                    b = c(4,5,6),
 #                    c = c(0,0,1)),
@@ -119,11 +116,13 @@ xy_boxplots <- function(data, x, y, ...) {
 #             color = "c")
 
 
+}
+
+
 
 #' @import gridExtra
 
 #' @import grid
 
 #' @import tibble
-
-
+NULL
