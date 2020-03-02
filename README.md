@@ -1,2 +1,2 @@
 # hammond
-General use R functions
+R functions that I'm tired of re-writing for different projects.
