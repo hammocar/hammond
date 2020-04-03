@@ -22,8 +22,8 @@ theme(plot.title = element_text(family = "Trebuchet MS", color="#666666", face="
       # get rid of ugly grey background
       legend.key = element_rect(colour = NA, fill = NA),
       panel.background = element_rect(fill = "white", colour = "#666666"),
-      panel.grid.major = element_line(size = 0.0015, linetype = 'solid',colour = "#666666"),
-      panel.grid.minor = element_line(size = 0.0005, linetype = 'solid',colour = "#666666"),
+      panel.grid.major = element_line(size = 0.10015, linetype = 'solid',colour = "#666666"),
+      panel.grid.minor = element_line(size = 0.10005, linetype = 'solid',colour = "#666666"),
       strip.background = element_rect(color = "#666666", fill = "white"),
       legend.key.size = unit(2.5, "cm"))
 
