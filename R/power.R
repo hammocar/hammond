@@ -155,148 +155,49 @@ list(lower = lowlim,
 
 
 
-sim_CI<- function(method, x, n, nsims, conflev){
-    x_sim <- rbinom(nsims,n,x/n)
-    if(method == "Clopper-Pearson"){
-    ci_alt<-  exactci(x = x_sim, n = n, conflev = conflev)
-    }
-    if(method == "Score"){
-      ci_alt<-scoreci(x = x_sim, n = n, conflev = conflev)
-    }
-    if(method == "Agresti-Coull"){
-      ci_alt<-add4ci(x_sim, n, conflev = conflev)
-    }
-    ci_alt
-}
-powers<-1:10000
-for (i in 1:10000){
-x1<-sim_CI(method = "Clopper-Pearson", x = .975*405, n = 405, nsims = 10000, conflev = 0.90)
-powers[i]<-mean(x1$lower > .95)}
-mean(powers)
 
-
-runTest <- function(n, sens, p){
-  x <- rbinom(n = 1, size = n, prob = sens)
-  tmp <- binom.test(x, n, p = p, alt = "greater")
-  tmp$conf.int[1] > p
-}
-
-get_power <- function(n_ci_simulations, n, sens, p) {
-
-  mean(monte_carlo(n_simulations =  n_ci_simulations, callback = runTest,
-            n = n,
-            sens = sens,
-            p = p), na.rm = TRUE)
-}
-
-get_many_powers <- function(n_power_simulations, n, sens, p, n_ci_simulations) {
-
-  monte_carlo(n_simulations =  n_power_simulations,
-              callback = get_power,
-              n_ci_simulations = n_ci_simulations,
-              n = n,
-              sens = sens,
-              p = p)
-}
-
-get_many_powers(n_power_simulations = 1000,
-                n = 405,
-                sens = .975,
-                p = .95,
-                n_ci_simulations = 1000)
+# runTest <- function(n, sens, p){
+#   x <- rbinom(n, size = 1, prob = sens)
+# mean(x) > p
+# }
 
 
 
-calculate_power <- function(method, x, n, null_value, alternative = "two-sided", alpha = .05, nsims = 1000){
-  conflev <- 1 - alpha
-  simCIs<-sim_CI(method = method, x = x, n = n, nsims = nsims, conflev = conflev)
-  if(alternative == "greater"){
-  power<-mean(simCIs$lower > null_value, na.rm = T)
-  }
-  if(alternative == "less"){
-  power<-mean(simCIs$upper < null_value, na.rm = T)
-  }
-  if(alternative == "two-sided"){
-  power<-mean(simCIs$lower > null) + mean(simCIs$upper < null_value, na.rm = T)
-  }
-  power
-}
+#Example
+
+# variables<-
+#   purrr::cross_df(
+#     list(
+#       n = 1:50,
+#       true_sensitivity = c(.93, .94, .95)
+#     )
+#   )
+# variables<- as.data.frame(variables)
+# # Maps the power simulation through every variable specified in "variables" above.
+#
+#
+# power_sims<- unlist(purrr::map(1:nrow(variables), ~
+#                                  mean(monte_carlo(n_simulations = 100000, runTest, n = variables$n[.x], sens = variables$true_sensitivity[.x],p = .80))))
+#
+#
+#
+# power_df <- variables %>% mutate(power = power_sims)
 
 
-#'This function performs a power analysis using the given method
-#'
-#' @param method Method of calculating confidence interval
-#' @param effect_sizes Effect size(s) to examine
-#' @param sample_sizes Sample sizes to examine
-#'
-#'
-#' @return a list with lower bound, point estimate, and upper bound.
-#' @export
-power_calc_one_sample <- function(method, sample_p, sample_sizes, alternative, null_value, alpha = 0.05, nsims = 10000, nsims_power = 1000) {
 
-variables<-
-  purrr::cross_df(
-    list(
-      sample_p = sample_p,
-      sample_sizes = sample_sizes,
-      null_value = null_value,
-      alternative = alternative
-    )
-  )
-variables<- as.data.frame(variables)
-# Maps the power simulation through every variable specified in "variables" above.
-
-
-power_sims<- unlist(purrr::map(1:nrow(variables), ~
-                                 mean(monte_carlo(n_simulations = nsims_power,
-                                                  callback = calculate_power,
-                                                  method = method,
-                                                  x = variables$sample_p[.x]*variables$sample_sizes[.x],
-                                                  n = variables$sample_sizes[.x],
-                                                  alternative = alternative,
-                                                  null_value = variables$null_value[.x],
-                                                  alpha = alpha,
-                                                  nsims = nsims), na.rm = TRUE)))
-
-
-power_df <- variables %>% mutate(power = power_sims)
-power_df
-}
+#
+# ggplot(power_df,aes(x = n, y = power, color = factor(true_sensitivity)))+
+#   geom_point()+
+#   geom_abline(intercept = .9, slope = 0, color = "black")+
+#   theme_fivethirtyeight()+
+#   labs( x = "n", y = "Power", color = "True Sensitivity")+
+#   ggtitle("Power for > 80% Sensitivity")+
+#   scale_y_continuous(breaks = seq(0,1, .1))+
+#   theme(axis.title = element_text())
 
 
 
 
-
-power_data<-power_calc_one_sample(method = "Score",
-                      sample_p = .975,
-                      sample_sizes = seq(300, 350, 5),
-                      alternative = "greater",
-                      null_value = .95,
-                      alpha = 0.1,
-                      nsims = 1000,
-                      nsims_power = 10000)
-
-
-
-ggplot(power_data, aes(x = sample_sizes, y = power))+
-  geom_point()+
-  geom_line()+
-  mytheme()
-
-
-
-powrange <- seq(0.4, .9, .1)
-
-n <- sapply(powrange, function(i) power.prop.test(p1=0.975,p2=0.95,power=i,sig.level=0.10, alternative = "two.sided")$n)
-plot(n, powrange, type="b",xlab="sample size",ylab="power")
-
-power.prop.test(n = 405, p1 = 0.95, p2 = 0.975, sig.level = 0.05, alternative = "one.sided")
-
-pwr.2p.test(h = .975-.95, n = 405, sig.level = 0.10, alternative = "two.sided")
-pwr.p.test(h = .975-.95, n = 405, sig.level = 0.10, alternative = "two.sided")
-binom.prop.test(.975, 405, .95)
-binom.power(.975, n = 405, p = .95,alpha = 0.05, alternative = "greater", method = "exact" )
-binom.power()
 #' @import purrr
 
 
