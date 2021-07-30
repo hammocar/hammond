@@ -4,7 +4,7 @@
 \alias{scoreci}
 \title{This function computes a confidence interval for a proportion. It is based on inverting the large-sample normal score test for the proportion.}
 \usage{
-scoreci(x, n, conflev = 0.95)
+scoreci(x, n, conflev)
 }
 \arguments{
 \item{x}{Number of successes}

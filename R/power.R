@@ -138,7 +138,7 @@ exact_ind_mover_ci <- function(x1, N1, x2, N2, confidence_level = 0.95) {
 #'
 #' @return a list with lower bound, point estimate, and upper bound.
 #' @export
-scoreci <- function(x,n,conflev = 0.95){
+scoreci <- function(x,n,conflev){
   zalpha <- abs(qnorm((1-conflev)/2))
   phat <- x/n
   bound <- (zalpha*((phat*(1-phat)+(zalpha**2)/(4*n))/n)**(1/2))/
@@ -153,48 +153,63 @@ list(lower = lowlim,
      upper = uplim)
 }
 
+WilsonBinCI <-  function(n, p, a=0.05) {
+  z <- qnorm(1-a/2,lower.tail=FALSE)
+  l <- 1/(1+1/n*z^2)*(p + 1/2/n*z^2 +
+                        z*sqrt(1/n*p*(1-p) + 1/4/n^2*z^2))
+  u <- 1/(1+1/n*z^2)*(p + 1/2/n*z^2 -
+                        z*sqrt(1/n*p*(1-p) + 1/4/n^2*z^2))
+  list(lower=l, upper=u)
+}
 
-
-
-# runTest <- function(n, sens, p){
-#   x <- rbinom(n, size = 1, prob = sens)
-# mean(x) > p
+# binom::binom.confint(0, 25, method=c("wilson", "bayes", "agresti-coull"))
+#
+# #Example
+# runTest <- function(n, sens, p_null){
+#   x <- rbinom(1, size = n, prob = sens)
+#   p_hat<-x/n
+# binom::binom.confint(x, n, conf.level = .90 , method = "wilson")$lower > p_null
 # }
-
-
-
-#Example
-
+#
+#
 # variables<-
 #   purrr::cross_df(
 #     list(
-#       n = 1:50,
-#       true_sensitivity = c(.93, .94, .95)
+#       n = seq(150,300,1),
+#       true_sensitivity = seq(.97, .99, .01)
 #     )
 #   )
 # variables<- as.data.frame(variables)
 # # Maps the power simulation through every variable specified in "variables" above.
 #
-#
 # power_sims<- unlist(purrr::map(1:nrow(variables), ~
-#                                  mean(monte_carlo(n_simulations = 100000, runTest, n = variables$n[.x], sens = variables$true_sensitivity[.x],p = .80))))
+#                                  mean(monte_carlo(n_simulations = 1000,
+#                                                   runTest,
+#                                                   n = variables$n[.x],
+#                                                   sens = variables$true_sensitivity[.x],
+#                                                   p_null = .95))))
 #
 #
 #
-# power_df <- variables %>% mutate(power = power_sims)
-
-
-
+# power_df <- variables %>% mutate(power = power_sims,
+#                                  true.sens.labs = paste("True Concordance = ",true_sensitivity))
 #
-# ggplot(power_df,aes(x = n, y = power, color = factor(true_sensitivity)))+
+#
+# plot_data<- power_df
+#
+# ggplot(plot_data,
+#        aes(x = n, y = power, color = factor(true_sensitivity)))+
 #   geom_point()+
 #   geom_abline(intercept = .9, slope = 0, color = "black")+
+#   geom_vline(aes(xintercept = 185, linetype = "Verification sample size for extrapolated VAF >= 0.5%"), color = "dark grey")+
 #   theme_fivethirtyeight()+
-#   labs( x = "n", y = "Power", color = "True Sensitivity")+
-#   ggtitle("Power for > 80% Sensitivity")+
-#   scale_y_continuous(breaks = seq(0,1, .1))+
+#   scale_linetype_manual(values = c("Verification sample size for extrapolated VAF >= 0.5%" = "dashed"))+
+#   scale_color_gdocs()+
+#   labs( x = "n", y = "Power", color = "True Concordance", linetype = "")+
+#   ggtitle("Power for 90% Wilson lower bound > 95%")+
+#   scale_y_continuous(breaks = seq(0,1, .05))+
+#   scale_x_continuous(breaks = seq(150,300,10))+
 #   theme(axis.title = element_text())
-
 
 
 
