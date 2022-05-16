@@ -162,32 +162,32 @@ WilsonBinCI <-  function(n, p, a=0.05) {
   list(lower=l, upper=u)
 }
 
-# binom::binom.confint(0, 25, method=c("wilson", "bayes", "agresti-coull"))
-#
-# #Example
+
+#Example
 # runTest <- function(n, sens, p_null){
 #   x <- rbinom(1, size = n, prob = sens)
 #   p_hat<-x/n
-# binom::binom.confint(x, n, conf.level = .90 , method = "wilson")$lower > p_null
+# binom::binom.confint(x, n, conf.level = .90 , method = "wilson")$lower >= p_null
 # }
 #
+# #qbinom(p=.96, size = 500, prob = )
 #
 # variables<-
 #   purrr::cross_df(
 #     list(
-#       n = seq(150,300,1),
-#       true_sensitivity = seq(.97, .99, .01)
+#       n = seq(8000,8700,10),
+#       true_sensitivity = seq(.992, .995, .001)
 #     )
 #   )
 # variables<- as.data.frame(variables)
 # # Maps the power simulation through every variable specified in "variables" above.
 #
 # power_sims<- unlist(purrr::map(1:nrow(variables), ~
-#                                  mean(monte_carlo(n_simulations = 1000,
+#                                  mean(monte_carlo(n_simulations = 10000,
 #                                                   runTest,
 #                                                   n = variables$n[.x],
 #                                                   sens = variables$true_sensitivity[.x],
-#                                                   p_null = .95))))
+#                                                   p_null = .99))))
 #
 #
 #
@@ -201,16 +201,16 @@ WilsonBinCI <-  function(n, p, a=0.05) {
 #        aes(x = n, y = power, color = factor(true_sensitivity)))+
 #   geom_point()+
 #   geom_abline(intercept = .9, slope = 0, color = "black")+
-#   geom_vline(aes(xintercept = 185, linetype = "Verification sample size for extrapolated VAF >= 0.5%"), color = "dark grey")+
+# #  geom_vline(aes(xintercept = 185, linetype = "Verification sample size for extrapolated VAF >= 0.5%"), color = "dark grey")+
 #   theme_fivethirtyeight()+
-#   scale_linetype_manual(values = c("Verification sample size for extrapolated VAF >= 0.5%" = "dashed"))+
+# #  scale_linetype_manual(values = c("Verification sample size for extrapolated VAF >= 0.5%" = "dashed"))+
 #   scale_color_gdocs()+
-#   labs( x = "n", y = "Power", color = "True Concordance", linetype = "")+
-#   ggtitle("Power for 90% Wilson lower bound > 95%")+
+#   labs( x = "n", y = "Power", color = "True Specificity", linetype = "")+
+#   ggtitle("Power for 90% Wilson lower bound >= 99%")+
 #   scale_y_continuous(breaks = seq(0,1, .05))+
-#   scale_x_continuous(breaks = seq(150,300,10))+
+#   scale_x_continuous(breaks = seq(min(variables$n),max(variables$n),50))+
 #   theme(axis.title = element_text())
-
+#
 
 
 #' @import purrr
