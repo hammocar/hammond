@@ -1,0 +1,953 @@
+---
+title: "MTM Development Study: VAF Linearity, Precision and LoD"
+output: rmdformats::readthedown
+vignette: >
+  %\VignetteIndexEntry{MTM Development Study: VAF Linearity, Precision and LoD}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, echo = FALSE, warning = FALSE, message = FALSE,error=FALSE,results='hide', fig.keep='all'}
+knitr::opts_chunk$set(root.dir = rprojroot::find_rstudio_root_file(),
+                     echo = FALSE,
+                     warning = FALSE,
+                     message = FALSE,
+                     error=FALSE)
+
+options(scipen=999)
+
+library(mtm.calibration)
+library(VCA)
+library(VFP)
+library(kableExtra)
+library(patchwork)
+library(lubridate)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(investr)
+library(ggpubr)
+library(viridis)
+
+setwd(rprojroot::find_rstudio_root_file())
+
+# Load data 
+Data <- read.csv("data/DEV_Linearity_Precision_LoD.csv")
+
+# Remove Empty Columns
+Data<-Data[1:537,]
+
+
+# Make it looks like Brian's simulated data
+# Now columns names are the same as the simulated data
+Data$IntendedVAF<-as.numeric(Data$Intended.VAF)*100
+Data$ObsVAF<-as.numeric(Data$zeroed_out_meanvaf)*100
+Data$HiSeq<-as.numeric(as.factor(Data$HiSeq.Instrument))
+Data$Operator<-as.numeric(as.factor(Data$Operator))
+Data$Reagent<-as.numeric(as.factor(Data$Reagent.lot))
+Data$Plate<-as.numeric(as.factor(Data$Plate..))
+Data$SampleCall <- ifelse(Data$samplelevel_calls == "POSITIVE",1, 0)
+Data$Input<-Data$Lib.input..ng.
+Data$Rep<-Data$Rep
+Data$Day<-as.numeric(factor(mday(mdy(str_replace(Data$Day, "/", "-")))))
+
+# Remove unnecessary columns
+Data <- Data %>% select(IntendedVAF, ObsVAF, HiSeq, Operator, Reagent, Plate, Rep, Day, SampleCall, Input, Sample.type, num_pos_targets, Sample.description) %>%
+  #zero-out mean VAFs for samples with a sample-level negative call (this usually happens in LIMS)
+  mutate(ObsVAF = if_else(SampleCall==0,0,ObsVAF),
+         Input = if_else(Input==12.9,66,Input)) #correct one error in input values based on double check from Biodev
+
+# For LoB data, only look at healthy donor data that passed QC
+LoBData = Data %>% filter(Sample.type == "healthy donor", num_pos_targets != "qcfailed") %>%
+  mutate(PlasmaSampleNumber=as.numeric(substr(Sample.description,8,8)))
+
+# map old intendeds to new intendeds. This mapping comes from https://docs.google.com/spreadsheets/d/1LIyuYoznRZP9MDxsSauiBDI7unwn3hhdACvygJi87JU/edit#gid=124735047
+IntendedMap = tibble(
+  IntendedVAF = c(0.005,0.01,0.01,0.05,0.05,0.10,0.10,1,1,10,10,20,20,40,40,60,80),
+  Input = c(10,10,66,10,66,10,66,10,66,10,66,10,66,10,66,66,66),
+  IntendedVAF_new86 = c(0.011,0.021,0.021,0.107,0.094,0.202,0.187,1.899,1.887,16.930,16.778,31.291,31.067,54.334,54.183,71.907,86.000),
+  IntendedVAF_new = c(0.01,0.02,0.02,0.1,0.087,0.188,0.174,1.766,1.756,15.749,15.607,29.108,28.899,50.543,50.402,66.891,80)
+)
+#average new intended VAFs by original intended VAF group so each input level doesn't have it's own new intended VAF
+IntendedMap2 = IntendedMap %>% group_by(IntendedVAF) %>%
+  summarise(IntendedVAF_new_Mean = round(mean(IntendedVAF_new),3))
+
+# Only look at cell line data that passed QC and merge in adjusted intended VAFs
+PrecData <- Data %>% filter(Sample.type == "cell line", num_pos_targets != "qcfailed") %>%
+  mutate(Input=if_else(Input<40,10,66))
+
+
+PrecData = PrecData %>%
+  mutate(Input=if_else(Input<40,10,66)) %>% left_join(IntendedMap2,by="IntendedVAF") %>%
+  mutate(OriginalIntendedVAF=IntendedVAF,
+         IntendedVAF=IntendedVAF_new_Mean)
+
+#write.csv(PrecData, file = "data/DEV_Linearity_Precision_LoD_CELL_LINE_CLEAN")
+#write.csv(LoBData, file = "data/DEV_LoB_CLEAN")
+
+LoD_LowerDilutionsDat_raw = read.csv("data/DEV_LowerDilutionSampleLevel.csv")
+LoD_LowerDilutionsDat = LoD_LowerDilutionsDat_raw %>%
+  mutate(IntendedVAF = meanvaf_intended*100,
+         ObsVAF = meanvaf_targetlevel_zeroedout*100,
+         SampleCall = ifelse(samplelevel_call=="POSITIVE",1,ifelse(samplelevel_call=="NEGATIVE",0,NaN))) %>%
+  select(SampleCall,ObsVAF,IntendedVAF)
+
+```
+
+
+# Intended VAF Correction
+
+The mean observed mean VAF levels exhibited significant bias compared to the originally intended mean VAFs. Based on this finding, the dilution assumptions were re-checked and it was found that the actual observed cell line DNA concentration was nearly twice the originally asumed concentration. This new concentration measurement was combined with the original mixing proportions to back calculate adjusted intended mean VAF levels. While there were slight differences in these values between the 10 ng and 66 ng samples, the values were averaged to create a single adjusted intended mean VAF for each level of the original intended mean VAF. Table X shows the original intended mean VAFs, the adjusted intended mean VAFs, and the mean observed mean VAFs at each level. All analyses used the adjusted intended mean VAF and all future references to "intended mean VAF" refer to this adjusted value.
+
+```{r}
+PrecData %>% group_by(OriginalIntendedVAF) %>%
+  summarize("Original Intended Mean VAF" = round(mean(OriginalIntendedVAF),3),
+            "Adjusted Intended Mean VAF" = round(mean(IntendedVAF),3),
+            "Mean Observed Mean VAF" = round(mean(ObsVAF),3)) %>%
+  select(-c("OriginalIntendedVAF")) %>%
+  kable()
+```
+
+# Precision
+
+The full mixed effects (specified in section 9.2.2) exhibited numerical instability, likely due to the confounded design and small percentage of variance that was explained by between run factors. Because of these issues, a reduced version of the model was fitted. In the reduced model the random effects for operator, sequencer, reagent lot, and day were replaced by a single random effect for run. Full specification of this model can be found in the Appendix. Tables X and X show the % CVs estimated using the reduced mixed effects models for the 10 ng input data and 66 ng input data, respectively. The qualitative precision estimates for each intended mean VAF level are also shown. Figures X and X show the estimated precision profiles along with the best fitting smoothed precision profile model results for each input level. Similar results for the combined DNA input data can be found in the Appendix.
+
+Results for 10 ng data:
+
+```{r, results='hide'}
+# 10ng input R&R
+RnR10<-RnR(Observed="ObsVAF",
+                  VCvars=c("Plate"),
+                  LevelVar= "IntendedVAF",
+                  RunID="Plate",
+                  SampleID = "IntendedVAF",  Call="SampleCall",
+                  Data= PrecData %>% filter(Input == 10))
+```
+
+```{r}
+kable(RnR10$Summary_RnR %>% mutate(Observed_mean=round(Observed_mean,3)))
+
+Xticks=c(0.01,0.1,1,10,40,80)
+# CV plot by 10ng
+CVbyobserved10 <-
+  ggplot(RnR10$Precision_Profile, aes(x=log(Observed),y= CV,col=PrecType)) + 
+  geom_point(aes(shape=DataType)) + 
+  geom_line(aes(linetype=DataType)) + 
+  labs(color = "", linetype = "", shape = "", y = "% CV", x ="log(mean(Measured Mean VAF))")+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("% CV") +
+  ggthemes::theme_gdocs()
+
+#SD plotby 10 ng
+SDbyobserved10 <-
+  ggplot(RnR10$Precision_Profile, aes(x=log(Observed),y= SD,col=PrecType)) + 
+  geom_point(aes(shape=DataType)) + 
+  geom_line(aes(linetype=DataType)) + 
+  labs(color = "", linetype = "", shape = "", y = "SD", x ="log(mean(Measured Mean VAF))")+
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("SD") +
+  ggthemes::theme_gdocs()
+
+(CVbyobserved10 / SDbyobserved10) + 
+  plot_layout(guides = "collect")+ 
+  plot_annotation(  title = "Quantitative Precision at 10 ng DNA Input") & ggthemes::theme_gdocs()
+
+```
+
+Results for 66 ng data:
+
+```{r, results='hide'}
+# 66ng input R&R
+RnR66<-RnR(Observed="ObsVAF",
+                  VCvars=c("Plate"),
+                  LevelVar= "IntendedVAF",
+                  RunID="Plate",
+                  SampleID = "IntendedVAF",  Call="SampleCall",
+                  Data= PrecData %>% filter(Input == 66))
+
+```
+
+```{r}
+kable(RnR66$Summary_RnR %>% mutate(Observed_mean=round(Observed_mean,3)))
+
+# CV plot at 66ng
+CVbyobserved66 <-
+  ggplot(RnR66$Precision_Profile, aes(x=log(Observed),y= CV,col=PrecType)) + 
+  geom_point(aes(shape=DataType)) + 
+  geom_line(aes(linetype=DataType)) + 
+  labs(color = "", linetype = "", shape = "", y = "% CV", x ="log(mean(Measured Mean VAF))")+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("% CV") +
+  ggthemes::theme_gdocs()
+
+#SD plot at 66ng
+SDbyobserved66 <-
+  ggplot(RnR66$Precision_Profile, aes(x=log(Observed),y= SD,col=PrecType)) + 
+  geom_point(aes(shape=DataType)) + 
+  geom_line(aes(linetype=DataType)) + 
+  labs(color = "", linetype = "", shape = "", y = "SD", x ="log(mean(Measured Mean VAF))")+
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("SD") +
+  ggthemes::theme_gdocs()
+
+(CVbyobserved66 / SDbyobserved66) + 
+  plot_layout(guides = "collect")+ 
+  plot_annotation(  title = "Quantitative Precision at 66 ng DNA Input") & ggthemes::theme_gdocs()
+```
+
+Combined DNA input (10 ng & 66 ng) results: 
+
+```{r, results='hide'}
+# Combined input R&R
+RnR1066<-RnR(Observed="ObsVAF",
+             VCvars=c("Plate"),
+             LevelVar="IntendedVAF",
+             RunID="Plate",
+             SampleID = "IntendedVAF",Call="SampleCall",
+             Data=PrecData)
+```
+
+```{r}
+kable(RnR1066$Summary_RnR %>% mutate(Observed_mean=round(Observed_mean,3)))
+
+# CV plot 
+CVbyobserved <-
+  ggplot(RnR1066$Precision_Profile, aes(x=log(Observed),y= CV,col=PrecType)) + 
+  geom_point(aes(shape=DataType)) + 
+  geom_line(aes(linetype=DataType)) + 
+  labs(color = "", linetype = "", shape = "", y = "% CV", x ="log(mean(Measured Mean VAF))")+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("% CV") +
+  ggthemes::theme_gdocs()
+
+#SD plot
+SDbyobserved <-
+  ggplot(RnR1066$Precision_Profile, aes(x=log(Observed),y= SD,col=PrecType)) + 
+  geom_point(aes(shape=DataType)) + 
+  geom_line(aes(linetype=DataType)) + 
+  labs(color = "", linetype = "", shape = "", y = "SD", x ="log(mean(Measured Mean VAF))")+
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("SD") +
+  ggthemes::theme_gdocs()
+
+(CVbyobserved / SDbyobserved) + 
+  plot_layout(guides = "collect")+ 
+  plot_annotation(  title = "Quantitative Precision:Combined 10 & 66 ng DNA Inputs") & ggthemes::theme_gdocs()
+```
+
+
+
+# LoB
+
+Table X shows the results of the LoB analysis of 27 replicates from a total of 8 healthy plasma donor samples. All samples received a negative sample-level call, leading to a 100% point estimate for negativity rate with a corresponding Wilson 95% confidence interval of (87.5%, 100%). Likewise, the estimated qualitative repeatability and reproducibility are both 100% with respective 95% confidence intervals of (75.8%, 100%) and (79.6%, 100%). These results verify the mean VAF LoB of 0 and demonstrate qualitative repeatability and reproducibility for (presumed) negative samples.
+
+```{r}
+LoBRepeat = GetQualRepeat(Data=LoBData, SampleID="PlasmaSampleNumber", RunID="Plate", Call="SampleCall")
+LoBReprod = GetQualReprod(Data=LoBData, SampleID="PlasmaSampleNumber",Call="SampleCall")
+LoBHitRates = LoBData %>% group_by(1) %>% 
+  summarise("Negativity Rate"=(1-mean(SampleCall))*100,
+            "N Negative"=n()-sum(SampleCall),
+            "N"=n())
+LoBHitRates %>% select(`Negativity Rate`,`N Negative`,N) %>% 
+  bind_cols("Repeatability"=LoBRepeat*100,"Reproducibility"=LoBReprod*100) %>%
+  kable()
+```
+
+# LoD
+
+## Hit Rate Summary:
+
+Tables XX, XX, and XX show the sample-level hit rates (percent of replicates with a sample level positive call) and their 95% Wilson confidence intervals by cfDNA input level. Similar results broken out by reagent lot can be found in the Appendix.
+
+Combined cfDNA inputs (10 & 66ng):
+
+```{r}
+LoDdat = PrecData %>% filter(Input==10,IntendedVAF<=2) %>%
+  group_by(IntendedVAF) %>%
+  summarise("MeanObsVAF"=mean(ObsVAF)) %>%
+  right_join(PrecData %>% filter(Input==10,IntendedVAF<=2),by="IntendedVAF")
+
+#summarize hit rate by intended VAF and cfDNA input level, note that 10ng input must be used for LoD establishment
+LoDTab = PrecData %>% group_by(IntendedVAF) %>% 
+  summarize("Observed VAF"=round(mean(ObsVAF),3),
+            "N_positive"=sum(SampleCall),
+            "N"=n(),
+            "HitRate"=round(mean(SampleCall)*100,2),
+            "Wilson_LB"=round(wilson_score(N_positive,N)$lower*100,2),
+            "Wilson_UB"=round(wilson_score(N_positive,N)$upper*100,2))
+kable(LoDTab)
+```
+
+10ng cfDNA input level:
+
+```{r}
+LoDTab10 = PrecData %>% filter(Input == 10) %>% group_by(IntendedVAF) %>% 
+  summarize("Observed VAF"=round(mean(ObsVAF),3),
+            "N_positive"=sum(SampleCall),
+            "N"=n(),
+            "HitRate"=round(mean(SampleCall)*100,2),
+            "Wilson_LB"=round(wilson_score(N_positive,N)$lower*100,2),
+            "Wilson_UB"=round(wilson_score(N_positive,N)$upper*100,2))
+kable(LoDTab10)
+```
+
+66ng DNA input level:
+
+```{r}
+LoDTab66 = PrecData %>% filter(Input == 66) %>% group_by(IntendedVAF) %>% 
+  summarize("Observed VAF"=round(mean(ObsVAF),3),
+            "N_positive"=sum(SampleCall),
+            "N"=n(),
+            "HitRate"=round(mean(SampleCall)*100,2),
+            "Wilson_LB"=round(wilson_score(N_positive,N)$lower*100,2),
+            "Wilson_UB"=round(wilson_score(N_positive,N)$upper*100,2))
+kable(LoDTab66)
+```
+
+
+```{r, results='hide'}
+
+#estimate the LoD using precision profile
+RnRLoD<-RnR(Observed="ObsVAF",
+            VCvars=c("Plate"),
+            LevelVar= "IntendedVAF",
+            RunID="Plate",
+            SampleID="IntendedVAF",  Call="SampleCall",
+            Data= LoDdat)
+c_p = qnorm(0.95)/(1-1/(4*(nrow(LoDdat)-length(unique(LoDdat$IntendedVAF)))))
+VAFseq=seq(0.0001,2,by=0.0001)
+Preds=data.frame("Mean"=VAFseq,"ReprodSD"=sqrt(predict(RnRLoD$ReprodProfFit,newdata=VAFseq)$Fitted),
+                 "ReprodCV"=sqrt(predict(RnRLoD$ReprodProfFit,newdata=VAFseq)$Fitted)/VAFseq)
+PPLoD = max(Preds[which(Preds$ReprodSD*c_p>=Preds$Mean),"Mean"])
+```
+
+Figure X shows the estimated precision profile using only the five lowest intended mean VAF levels and considering only 10 ng cfDNA input. Using this precision profile and the precision profile LoD establishment procedure described above, the estimated mean VAF LoD is `r round(PPLoD,3)`%.
+
+```{r, results='hide'}
+#plot precision profiles for 10ng in the low intended VAF range
+# CV plot
+CVbyobservedLoD <-
+  ggplot(RnRLoD$Precision_Profile, aes(x=log(Observed),y= CV,col=PrecType)) + 
+  geom_point(aes(shape=DataType)) + 
+  geom_line(aes(linetype=DataType)) + 
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  labs(x = "log(mean(Measured Mean VAF)", y = "%CV", linetype = "", shape = "", color = "")+
+  ggtitle("% CV") +
+  ggthemes::theme_gdocs()
+
+#SD plot
+SDbyobservedLoD <-
+  ggplot(RnRLoD$Precision_Profile, aes(x=log(Observed),y= SD,col=PrecType)) + 
+  geom_point(aes(shape=DataType)) + 
+  geom_line(aes(linetype=DataType)) + 
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  labs(x = "log(mean(Measured Mean VAF)", y = "SD", linetype = "", shape = "", color = "")+
+  ggtitle("SD") +
+  ggthemes::theme_gdocs()
+
+(CVbyobservedLoD / SDbyobservedLoD) + 
+  plot_layout(guides = "collect")+ 
+  plot_annotation(  title = "LoD Reproducibility Profile Fit") & ggthemes::theme_gdocs()
+
+```
+
+
+```{r}
+########probit approach
+ProbitFit1 = glm(as.factor(SampleCall)~MeanObsVAF,data=LoDdat,family=binomial("probit"))
+
+ProbitPreds1=predict(ProbitFit1,data.frame("MeanObsVAF"=VAFseq),type="response",se.fit=T)
+
+#find C95
+ProbitLoDout = invest(ProbitFit1, y0 = 0.95)
+ProbitLoD = ProbitLoDout$estimate
+ProbitLoD_LB = ProbitLoDout$lower
+ProbitLoD_UB = ProbitLoDout$upper
+```
+
+The probit approach estimates an LoD of `r round(ProbitLoD,3)`% at the 10ng DNA input level, with a 95% confidence interval of `r round(ProbitLoD_LB,3)`% to `r round(ProbitLoD_UB,3)`%. Figure X shows the estimated probit regression fit. Because only two intended mean VAF levels showed hit rates less than 100%, other link functions were not considered for this analysis to avoid overfitting.
+
+```{r}
+ggplot() + 
+  geom_line(aes(x = VAFseq, y = ProbitPreds1$fit))+
+  geom_point(aes(x = LoDTab10$`Observed VAF`, y = LoDTab10$HitRate/100)) +
+  geom_abline(slope = 0, intercept = 0.95, color = "black", lty = 2)+
+  geom_point(aes(x =ProbitLoD, y = ProbitPreds1$fit[which(ProbitPreds1$fit>=0.95)[1]], color =  paste("Estimated LoD \n= ", round(ProbitLoD,3))))+
+  geom_vline(aes(xintercept = ProbitLoD, color =  paste("Estimated LoD \n= ", round(ProbitLoD,3))),lty = 2)+
+  ggtitle("LoD Probit Analysis")+
+  scale_color_viridis(discrete = T, begin = .75)+
+  labs(x = "Observed mean VAF", y = "Hit rate", color = "")+
+  guides(color = element_blank())+
+  lims(x = c(0, ProbitLoD_UB+ 0.005), y = c(0,1))+
+  ggthemes::theme_gdocs()
+```
+
+Considering the hit rate at each mean VAF level and the two estimated LoDs together with their corresponding uncertainty, 0.1% mean VAF was established as a conservative best estimate of the LoD.
+
+```{r, results='hide'}
+#try fitting LoD models on intended VAF instead of observed to see how robust the results are
+#estimate the LoD using precision profile
+VFP_Int<-fit.vfp(RnRLoD$PrecProfData,model.no=1:10,col.df="ReprodDF",col.var="ReprodVar",col.mean="LevelVar")
+
+Preds_Int=data.frame("Mean"=VAFseq,"ReprodSD"=sqrt(predict(VFP_Int,newdata=VAFseq)$Fitted),
+                     "ReprodCV"=sqrt(predict(VFP_Int,newdata=VAFseq)$Fitted)/VAFseq)
+PPLoD_Int = max(Preds_Int[which(Preds_Int$ReprodSD*c_p>=Preds_Int$Mean),"Mean"])
+
+########probit approach
+ProbitFit2 = glm(as.factor(SampleCall)~IntendedVAF,data=LoDdat,family=binomial("probit"))
+
+ProbitPreds2=predict(ProbitFit2,data.frame("IntendedVAF"=VAFseq),type="response",se.fit=T)
+
+#find C95
+ProbitLoDout_Int = invest(ProbitFit2, y0 = 0.95)
+ProbitLoD_Int = ProbitLoDout_Int$estimate
+ProbitLoD_Int_LB = ProbitLoDout_Int$lower
+ProbitLoD_Int_UB = ProbitLoDout_Int$upper
+```
+
+## LoD Analysis Including Lower Dilution Run
+
+```{r}
+LoDdat_combo_means = PrecData %>% filter(Input == 10) %>% 
+  select(SampleCall,ObsVAF,IntendedVAF) %>%
+  bind_rows(LoD_LowerDilutionsDat) %>% 
+  group_by(IntendedVAF) %>%
+  summarize(MeanObsVAF=mean(ObsVAF))
+LoDdat_combo = PrecData %>% filter(Input == 10) %>% 
+  select(SampleCall,ObsVAF,IntendedVAF) %>%
+  bind_rows(LoD_LowerDilutionsDat) %>%
+  left_join(LoDdat_combo_means,by="IntendedVAF")
+LoDTabCombo = LoDdat_combo %>% group_by(IntendedVAF) %>% 
+  summarize("Observed VAF"=round(mean(ObsVAF),3),
+            "N_positive"=sum(SampleCall),
+            "N"=n(),
+            "HitRate"=round(mean(SampleCall)*100,2),
+            "Wilson_LB"=round(wilson_score(N_positive,N)$lower*100,2),
+            "Wilson_UB"=round(wilson_score(N_positive,N)$upper*100,2))
+kable(LoDTabCombo)
+```
+
+
+```{r}
+########probit approach
+ProbitFit_combo = glm(as.factor(SampleCall)~MeanObsVAF,data=LoDdat_combo,family=binomial("probit"))
+
+ProbitPreds_combo=predict(ProbitFit_combo,data.frame("MeanObsVAF"=VAFseq),type="response",se.fit=T)
+
+#find C95
+ProbitLoDout_combo = invest(ProbitFit_combo, y0 = 0.95)
+ProbitLoD_combo = ProbitLoDout_combo$estimate
+ProbitLoD_LB_combo = ProbitLoDout_combo$lower
+ProbitLoD_UB_combo = ProbitLoDout_combo$upper
+```
+
+The probit approach including the 0.05% and 0.075% intended VAFs estimates an LoD of `r round(ProbitLoD_combo,3)`% at the 10ng DNA input level, with a 95% confidence interval of `r round(ProbitLoD_LB_combo,3)`% to `r round(ProbitLoD_UB_combo,3)`%. Figure X shows the estimated probit regression fit.
+
+```{r}
+ggplot() + 
+  geom_line(aes(x = VAFseq, y = ProbitPreds_combo$fit))+
+  geom_point(aes(x = LoDTabCombo$`Observed VAF`, y = LoDTabCombo$HitRate/100)) +
+  geom_abline(slope = 0, intercept = 0.95, color = "black", lty = 2)+
+  geom_point(aes(x =ProbitLoD_combo, y = ProbitPreds_combo$fit[which(ProbitPreds_combo$fit>=0.95)[1]], color =  paste("Estimated LoD \n= ", round(ProbitLoD_combo,3))))+
+  geom_vline(aes(xintercept = ProbitLoD_combo, color =  paste("Estimated LoD \n= ", round(ProbitLoD_combo,3))),lty = 2)+
+  ggtitle("LoD Probit Analysis, Lower Dilutions Included")+
+  scale_color_viridis(discrete = T, begin = .75)+
+  labs(x = "Observed mean VAF", y = "Hit rate", color = "")+
+  guides(color = element_blank())+
+  lims(x = c(0, 0.11), y = c(0,1))+
+  ggthemes::theme_gdocs()
+```
+
+```{r, results='hide'}
+########probit approach
+ProbitFit2_combo = glm(as.factor(SampleCall)~IntendedVAF,data=LoDdat_combo,family=binomial("probit"))
+
+ProbitPreds2_combo=predict(ProbitFit2_combo,data.frame("IntendedVAF"=VAFseq),type="response",se.fit=T)
+
+#find C95
+ProbitLoDout_Int_combo = invest(ProbitFit2_combo, y0 = 0.95)
+ProbitLoD_Int_combo = ProbitLoDout_Int_combo$estimate
+ProbitLoD_Int_LB_combo = ProbitLoDout_Int_combo$lower
+ProbitLoD_Int_UB_combo = ProbitLoDout_Int_combo$upper
+```
+
+
+# LoQ
+
+Tables XX, XX, and XX show the total error results for each intended mean VAF level for all data, 10 ng cfDNA input data, and 66 cfDNA input data, respectively. Additional results broken out by reagent lot can be found in the Appendix. Percent total error is below 30% for all intended mean VAF levels at the 66 ng input level. For the 10 ng input data, total error drops below 30% at the near 0.1% mean VAF, suggesting the LoQ of the assay is close or equivalent to the LoD established in the same range. The high percent total error reported for the two lowest mean VAFs at 10 ng input are expected because these mean VAF levels  are below the estimated LoD (see Section 9.4.4) and below the range with acceptable quantitative precision (see Section 9.2.3).
+
+LoQ summary, combined 10 ng and 66 ng data:
+
+```{r}
+#All input analysis analysis
+LoQTab1066 = RnR1066$PrecProfData %>% select("LevelVar","Mean","ReprodVar") %>%
+  mutate(IntendedVAF=LevelVar,
+         MeanObsVAF=round(Mean,3),
+         Bias=Mean-LevelVar,
+         PercBias=round(Bias/LevelVar*100,1),
+         PercCV=round(sqrt(ReprodVar)/LevelVar*100,1),
+         TotalError=sqrt(ReprodVar+Bias^2),
+         PercTotalError=round(TotalError/LevelVar*100,1),
+         TotalErrorWG=2*sqrt(ReprodVar)+abs(Bias),
+         PercTotalErrorWG=round(TotalErrorWG/LevelVar*100,1)) %>% 
+  select("IntendedVAF","MeanObsVAF","PercBias","PercCV","PercTotalError","TotalErrorWG","PercTotalErrorWG")
+
+LoQTab1066 %>% mutate(TotalErrorWG=round(TotalErrorWG,3)) %>% kable()
+
+# 10 and 66 ng LoQ profile plot 
+LoQPlot1066 <-
+  ggplot(LoQTab1066, aes(x=log(IntendedVAF),y=PercTotalErrorWG)) + 
+  geom_point() + 
+  geom_line() + 
+  labs(y = "% TE", x ="log(Intended Mean VAF)")+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("% TE, Westgard Model") +
+  ggthemes::theme_gdocs()
+LoQPlot1066
+```
+
+LoQ summary at 10 ng cfDNA input:
+
+```{r}
+#10 ng analysis
+LoQTab10 = RnR10$PrecProfData %>% select("LevelVar","Mean","ReprodVar") %>%
+  mutate(IntendedVAF=LevelVar,
+         MeanObsVAF=round(Mean,3),
+         Bias=Mean-LevelVar,
+         PercBias=round(Bias/LevelVar*100,1),
+         PercCV=round(sqrt(ReprodVar)/LevelVar*100,1),
+         TotalError=sqrt(ReprodVar+Bias^2),
+         PercTotalError=round(TotalError/LevelVar*100,1),
+         TotalErrorWG=2*sqrt(ReprodVar)+abs(Bias),
+         PercTotalErrorWG=round(TotalErrorWG/LevelVar*100,1)) %>% 
+  select("IntendedVAF","MeanObsVAF","PercBias","PercCV","PercTotalError","TotalErrorWG","PercTotalErrorWG")
+
+LoQTab10 %>% mutate(TotalErrorWG=round(TotalErrorWG,3)) %>% kable()
+
+# 10 ng LoQ profile plot 
+LoQPlot10 <-
+  ggplot(LoQTab10, aes(x=log(IntendedVAF),y=PercTotalErrorWG)) + 
+  geom_point() + 
+  geom_line() + 
+  labs(y = "% TE", x ="log(Intended Mean VAF)")+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("% TE, Westgard Model") +
+  ggthemes::theme_gdocs()
+LoQPlot10
+```
+
+LoQ summary at 66 ng cfDNA input:
+
+```{r}
+LoQTab66 = RnR66$PrecProfData %>% select("LevelVar","Mean","ReprodVar") %>%
+  mutate(IntendedVAF=LevelVar,
+         MeanObsVAF=round(Mean,3),
+         Bias=Mean-LevelVar,
+         PercBias=round(Bias/LevelVar*100,1),
+         PercCV=round(sqrt(ReprodVar)/LevelVar*100,1),
+         TotalError=sqrt(ReprodVar+Bias^2),
+         PercTotalError=round(TotalError/LevelVar*100,1),
+         TotalErrorWG=2*sqrt(ReprodVar)+abs(Bias),
+         PercTotalErrorWG=round(TotalErrorWG/LevelVar*100,1)) %>% 
+  select("IntendedVAF","MeanObsVAF","PercBias","PercCV","PercTotalError","TotalErrorWG","PercTotalErrorWG")
+
+LoQTab66 %>% mutate(TotalErrorWG=round(TotalErrorWG,3)) %>% kable()
+
+# 66 ng LoQ profile plot 
+LoQPlot66 <-
+  ggplot(LoQTab66, aes(x=log(IntendedVAF),y=PercTotalErrorWG)) + 
+  geom_point() + 
+  geom_line() + 
+  labs(y = "% TE", x ="log(Intended Mean VAF)")+
+  scale_x_continuous(breaks=log(Xticks), labels=Xticks) + 
+  guides(color = guide_legend( override.aes = list(shape = 0, size = 5)))+
+  ggtitle("% TE, Westgard Model") +
+  ggthemes::theme_gdocs()
+LoQPlot66
+```
+
+# Linearity
+
+## Combined DNA Input Level (10ng & 66ng)
+
+
+```{r}
+
+percent_ADL<- .20
+
+# Add regression weight columns to data. Adding separate weights for each input and then rejoining the data.
+PrecData2<-
+rbind(
+left_join(PrecData %>% filter(Input == 10), 
+          RnR10$Precision_Profile %>% 
+            filter(PrecType == "Repeatability", DataType == "Mixed Model") %>% 
+            mutate(IntendedVAF = Intended) %>% 
+            select(IntendedVAF, VAR)) %>%
+  group_by(IntendedVAF) %>%
+  mutate(n = n(),
+         PPfittedVAR = VAR,
+         linearity_weight = n/PPfittedVAR) %>%
+  filter(IntendedVAF >= 0.094),
+
+left_join(PrecData %>% filter(Input == 66), 
+          RnR66$Precision_Profile %>% 
+            filter(PrecType == "Repeatability", DataType == "Mixed Model") %>% 
+            mutate(IntendedVAF = Intended) %>% 
+            select(IntendedVAF, VAR)) %>%
+  group_by(IntendedVAF) %>%
+  mutate(n = n(),
+         PPfittedVAR = VAR,
+         linearity_weight = n/PPfittedVAR) %>%
+  filter(IntendedVAF >= 0.01)
+)
+
+unique(PrecData2$IntendedVAF)
+linearity_data<-linearity_fit(PrecData2, "IntendedVAF", "ObsVAF", weight_col = "linearity_weight", weight_var = "PPfittedVAR")
+
+######################################################################################################
+# Add CI's (validation protocol)
+######################################################################################################
+# Multiple testing correction
+    # Number of CI's to include (5 needed for validation)
+    num_tests<- 5
+    alpha <- 0.05
+    alpha_Sidak <- 1 - (1 - (alpha/num_tests))^(1/num_tests)
+
+# Add CI's
+linearity_data$deviation_UB<-(linearity_data$mean - linearity_data$fitted) + qnorm(1 - alpha_Sidak/2)*sqrt(linearity_data$weight_var) / sqrt(linearity_data$n)
+linearity_data$deviation_LB<-(linearity_data$mean - linearity_data$fitted) - qnorm(1 - alpha_Sidak/2)*sqrt(linearity_data$weight_var) / sqrt(linearity_data$n)
+######################################################################################################
+
+
+linearity<- linearity_data
+# Plot results
+ggplot(linearity, aes(x = intended_col))+
+  geom_point(aes(y = fitted, color = "Predicted Value"))+
+  geom_point(aes(y = mean, color = "Measured Value"), alpha = .5)+
+  geom_smooth(aes(x = intended_col, y = fitted), method = "lm", se = F, color = "grey", size = .5, alpha =.1)+
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  ggtitle("Linearity Results, Model Fit", "Combined DNA Input (10 & 66 ng)")+
+  labs(color = "", y = "mean(Mean VAF)", x = "intended mean VAF")+
+  ggthemes::theme_gdocs()
+
+ggplot(linearity, aes(x = fitted))+
+  geom_point(aes(y = percent_deviation), alpha = .5)+
+  geom_abline(slope = 0, intercept = 0)+
+  geom_abline(aes(slope = 0, intercept = percent_ADL, color = "ADL"))+
+  geom_abline(aes(slope = 0, intercept = - percent_ADL, color = "ADL"))+
+  ggtitle("Linearity Results, Combined DNA Input (10 & 66 ng)", paste("Allowable Deviation from Linearity (ADL) = ±", percent_ADL*100, "%"))+
+  scale_color_viridis(discrete = T, begin = .75)+
+  labs(x = "Predicted Value", y = "% Deviation", color = "")+
+  scale_y_continuous(labels = scales::label_percent(accuracy = 1),
+                     limits = c(-max(abs(c(percent_ADL, min(linearity$percent_deviation),
+             max(linearity$percent_deviation)))),
+             max(abs(c(percent_ADL,min(linearity $percent_deviation),
+             max(linearity $percent_deviation))))))+
+  ggthemes::theme_gdocs()
+
+
+ggplot(linearity , aes(x = fitted))+
+  geom_point(aes(y = deviation), alpha = .5)+
+  geom_errorbar(aes(ymax = deviation_UB, ymin = deviation_LB))+
+  geom_ribbon(aes(ymin = -linearity$fitted*percent_ADL, ymax = linearity$fitted*percent_ADL), alpha = .5)+
+  ggtitle("Linearity Results, Combined DNA Input (10 & 66 ng)", paste("Allowable Deviation from Linearity (ADL) = ±", percent_ADL*100, "%"))+
+  scale_color_viridis(discrete = T, begin = .75)+
+  labs(x = "Predicted Value", y = "Deviation", color = "")+
+  ggthemes::theme_gdocs()
+
+kable(linearity)
+```
+
+## 66ng Input Level
+
+```{r}
+
+linearity66ng<-linearity_fit(PrecData2 %>% filter(Input == 66), "IntendedVAF", "ObsVAF", weight_col = "linearity_weight", weight_var = "PPfittedVAR")
+
+######################################################################################################
+# Add CI's (validation protocol)
+######################################################################################################
+# Multiple testing correction
+    # Number of CI's to include (5 needed for validation)
+    num_tests<- 5
+    alpha <- 0.05
+    alpha_Sidak <- 1 - (1 - (alpha/num_tests))^(1/num_tests)
+
+# Add CI's
+linearity66ng$deviation_UB<-(linearity66ng$mean - linearity66ng$fitted) + qnorm(1 - alpha_Sidak/2)*sqrt(linearity66ng$weight_var) / sqrt(linearity66ng$n)
+linearity66ng$deviation_LB<-(linearity66ng$mean - linearity66ng$fitted) - qnorm(1 - alpha_Sidak/2)*sqrt(linearity66ng$weight_var) / sqrt(linearity66ng$n)
+######################################################################################################
+
+
+# Plot results
+linearity_scatter66<-(ggplot(linearity66ng, aes(x = intended_col))+
+  geom_point(aes(y = fitted, color = "Predicted Value"))+
+  geom_point(aes(y = mean, color = "Measured Value"), alpha = .5)+
+  geom_smooth(aes(x = intended_col, y = fitted), method = "lm", se = F, color = "grey", size = .5, alpha =.1)+
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  lims(x = c(0,80), y = c(0,80))+
+  ggtitle("66 ng DNA Input")+
+  labs(color = "", y = "mean(Mean VAF)", x = "intended mean VAF")+
+  ggthemes::theme_gdocs()+
+  theme(plot.background = element_blank()))
+
+linearity_ADL66<-(ggplot(linearity66ng, aes(x = fitted))+
+  geom_point(aes(y = percent_deviation), alpha = .5)+
+  geom_abline(slope = 0, intercept = 0)+
+  geom_abline(aes(slope = 0, intercept = percent_ADL, color = "ADL"))+
+  geom_abline(aes(slope = 0, intercept = - percent_ADL, color = "ADL"))+
+  ggtitle("66 ng DNA Input")+
+  scale_color_viridis(discrete = T, begin = .75)+
+  labs(x = "Predicted Value", y = "% Deviation", color = "")+
+  scale_y_continuous(labels = scales::label_percent(accuracy = 1),
+                     limits = c(-max(abs(c(percent_ADL, min(linearity66ng$percent_deviation),
+             max(linearity66ng$percent_deviation)))),
+             max(abs(c(percent_ADL,min(linearity66ng$percent_deviation),
+             max(linearity66ng$percent_deviation))))))+
+  ggthemes::theme_gdocs())
+
+
+ggplot(linearity66ng, aes(x = fitted))+
+  geom_point(aes(y = deviation), alpha = .5)+
+  geom_errorbar(aes(ymax = deviation_UB, ymin = deviation_LB))+
+  geom_ribbon(aes(ymin = -linearity66ng$fitted*percent_ADL, ymax = linearity66ng$fitted*percent_ADL), alpha = .5)+
+  ggtitle("Linearity Results, 66 ng DNA Input", paste("Allowable Deviation from Linearity (ADL) = ±", percent_ADL*100, "%"))+
+  scale_color_viridis(discrete = T, begin = .75)+
+  labs(x = "Predicted Value", y = "Deviation", color = "")+
+  ggthemes::theme_gdocs()
+
+kable(linearity66ng)
+```
+
+After observing the precision profile created in the precision study in section 9.2.3 Precision Analysis Results and consulting with lab directors on acceptable assay performance, it was determined that a deviation from linearity of `r percent_ADL*100`% would not pose a risk to patient outcomes and would thus be set as the allowable deviation from linearity (ADL) for establishment of the linear range of the Signatera mean VAF measurement procedure. Weighted least squares regression was performed, regressing  measured mean VAF values (Y) on intended mean VAF values (X). The regression weights were informed by the precision profile created in the precision study, and were chosen as the number of replicates over the estimated variance as measured in the reproducibilty study, $\frac{n_{replicates}}{\hat{\sigma}_{repro}^2}$. The average measured mean VAF values across replicates run at the 66 ng DNA input level can be seen in figure X, as well as the fitted line and predicted values from the WLS regression that was performed. In figure XX, we observe the percent deviations from linearity, $\frac{measured - predicted}{predicted}\times 100\%$ compared to the allowable deviations from linearity. The established linear range of the mean VAF measurement procedure is the range of mean VAF values in which all deviations from linearity are smaller than `r percent_ADL*100`%.
+
+As an exploratory analysis, the same analysis described above was run on samples at the 10 ng DNA input level. The average measured mean VAF values across replicates run at the 10 ng DNA input level can be seen in figure X, as well as the fitted line and predicted values from the WLS regression that was performed. In figure XX, we observe the percent deviations from linearity, $\frac{measured - predicted}{predicted}\times 100\%$, compared to the `r percent_ADL*100`% deviations from linearity threshold that was applied to the analysis at the 66 ng DNA input level. Note that this is meant as an exploratory comparison and not acceptance criteria for establishment of a mean VAF linearity interval.
+
+## 10 ng Input Level
+
+
+```{r}
+
+
+linearity10ng<-linearity_fit(PrecData2 %>% filter(Input == 10), "IntendedVAF", "ObsVAF", weight_col = "linearity_weight", weight_var = "PPfittedVAR")
+
+# Add CI's
+linearity10ng$deviation_UB<-(linearity10ng$mean - linearity10ng$fitted) + qnorm(1 - alpha_Sidak/2)*sqrt(linearity10ng$weight_var) / sqrt(linearity10ng$n)
+linearity10ng$deviation_LB<-(linearity10ng$mean - linearity10ng$fitted) - qnorm(1 - alpha_Sidak/2)*sqrt(linearity10ng$weight_var) / sqrt(linearity10ng$n)
+######################################################################################################
+
+# Plot results
+linearity_scatter10<-(ggplot(linearity10ng, aes(x = intended_col))+
+  geom_point(aes(y = fitted, color = "Predicted Value"))+
+  geom_point(aes(y = mean, color = "Measured Value"), alpha = .5)+
+  geom_smooth(aes(x = intended_col, y = fitted), method = "lm", se = F, color = "grey", size = .5, alpha =.1)+
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75)+
+  lims(x = c(0,80), y = c(0,80))+
+  ggtitle("10 ng DNA Input")+
+  labs(color = "", y = "mean(Mean VAF)", x = "intended mean VAF")+
+  ggthemes::theme_gdocs()+
+  theme(plot.background = element_blank()))
+
+linearity_ADL10<-(ggplot(linearity10ng, aes(x = fitted))+
+  geom_point(aes(y = percent_deviation), alpha = .5)+
+  geom_abline(slope = 0, intercept = 0)+
+  geom_abline(aes(slope = 0, intercept = percent_ADL, color = "ADL"))+
+  geom_abline(aes(slope = 0, intercept = - percent_ADL, color = "ADL"))+
+  ggtitle("10 ng DNA Input")+
+  scale_color_viridis(discrete = T, begin = .75)+
+  labs(x = "Predicted Value", y = "% Deviation", color = "")+
+  scale_y_continuous(labels = scales::label_percent(accuracy = 1),
+                     limits = c(-max(abs(c(percent_ADL,min(linearity10ng$percent_deviation),
+             max(linearity10ng$percent_deviation)))),
+             max(abs(c(percent_ADL,min(linearity10ng$percent_deviation),
+             max(linearity10ng$percent_deviation))))))+
+  ggthemes::theme_gdocs())
+
+ggplot(linearity10ng, aes(x = fitted))+
+  geom_point(aes(y = deviation), alpha = .5)+
+  geom_errorbar(aes(ymax = deviation_UB, ymin = deviation_LB))+
+  geom_ribbon(aes(ymin = -linearity10ng$fitted*percent_ADL, ymax = linearity10ng$fitted*percent_ADL), alpha = .5)+
+  ggtitle("Linearity Results, 10 ng DNA Input", paste("Allowable Deviation from Linearity (ADL) = ±", percent_ADL*100, "%"))+
+  scale_color_viridis(discrete = T, begin = .75)+
+  labs(x = "Predicted Value", y = "Deviation", color = "")+
+  ggthemes::theme_gdocs()
+
+kable(linearity10ng)
+
+
+(linearity_scatter10 + linearity_scatter66) + 
+  plot_layout(guides = "collect")+ 
+  plot_annotation(  title = "Linearity Results, Model Fit") & ggthemes::theme_gdocs()+ theme(plot.background = element_blank(), legend.position = "bottom")
+
+
+(linearity_ADL10 + linearity_ADL66) + 
+  plot_layout(guides = "collect")+ 
+  plot_annotation(  title = "Linearity Results",subtitle = paste("Allowable Deviation from Linearity (ADL) = ±", percent_ADL*100, "%")) & ggthemes::theme_gdocs()+ theme(plot.background = element_blank(), legend.position = "bottom")
+
+```
+
+
+# Appendix
+
+## Observed Mean VAF distributions
+
+```{r fig.width=13}
+PrecData %>% 
+  ggplot(aes(x=ObsVAF,color=as.factor(Input),fill=as.factor(Input))) + 
+  geom_histogram(position="dodge",bins=7) + 
+  labs(color = "DNA Input", fill = "DNA Input", x ="Measured Mean VAF")+
+  scale_color_viridis(discrete = T, begin = 0, end = 0.75) +
+  scale_fill_viridis(discrete = T, begin = 0, end = 0.75) +
+  ggthemes::theme_gdocs() + facet_wrap(~as.factor(IntendedVAF),scales="free_x")
+```
+
+## LoD Results by Reagent Lot
+
+LoD summary, reagent lot 1: 
+
+```{r}
+LoDTab_r1 = PrecData %>% filter(Reagent==1) %>% group_by(IntendedVAF) %>% 
+  summarize("Observed VAF"=round(mean(ObsVAF),3),
+            "N_positive"=sum(SampleCall),
+            "N"=n(),
+            "HitRate"=round(mean(SampleCall)*100,2),
+            "Wilson_LB"=round(wilson_score(N_positive,N)$lower*100,2),
+            "Wilson_UB"=round(wilson_score(N_positive,N)$upper*100,2))
+kable(LoDTab_r1)
+```
+
+LoD summary, reagent lot 2: 
+
+```{r}
+LoDTab_r2 = PrecData %>% filter(Reagent==2) %>% group_by(IntendedVAF) %>% 
+  summarize("Observed VAF"=round(mean(ObsVAF),3),
+            "N_positive"=sum(SampleCall),
+            "N"=n(),
+            "HitRate"=round(mean(SampleCall)*100,2),
+            "Wilson_LB"=round(wilson_score(N_positive,N)$lower*100,2),
+            "Wilson_UB"=round(wilson_score(N_positive,N)$upper*100,2))
+kable(LoDTab_r2)
+```
+
+LoD summary, reagent lot 3: 
+
+```{r}
+LoDTab_r3 = PrecData %>% filter(Reagent==3) %>% group_by(IntendedVAF) %>% 
+  summarize("Observed VAF"=round(mean(ObsVAF),3),
+            "N_positive"=sum(SampleCall),
+            "N"=n(),
+            "HitRate"=round(mean(SampleCall)*100,2),
+            "Wilson_LB"=round(wilson_score(N_positive,N)$lower*100,2),
+            "Wilson_UB"=round(wilson_score(N_positive,N)$upper*100,2))
+kable(LoDTab_r3)
+```
+
+
+## LoQ Results by cfDNA Input and Reagent Lot
+
+LoQ summary, reagent lot 1:
+
+```{r,results='hide'}
+RnR1066_R1<-RnR(Observed="ObsVAF",
+                VCvars=c("Plate"),
+                LevelVar="IntendedVAF",
+                RunID="Plate",
+                SampleID = "IntendedVAF",Call="SampleCall",
+                Data=PrecData %>% filter(Reagent==1))
+```
+
+```{r}
+LoQTab1066_R1 = RnR1066_R1$PrecProfData %>% select("LevelVar","Mean","ReprodVar") %>%
+  mutate(IntendedVAF=LevelVar,
+         MeanObsVAF=round(Mean,3),
+         Bias=Mean-LevelVar,
+         PercBias=round(Bias/LevelVar*100,1),
+         PercCV=round(sqrt(ReprodVar)/LevelVar*100,1),
+         TotalError=sqrt(ReprodVar+Bias^2),
+         PercTotalError=round(TotalError/LevelVar*100,1),
+         TotalErrorWG=2*sqrt(ReprodVar)+abs(Bias),
+         PercTotalErrorWG=round(TotalErrorWG/LevelVar*100,1)) %>% 
+  select("IntendedVAF","MeanObsVAF","PercBias","PercCV","PercTotalError","PercTotalErrorWG")
+
+LoQTab1066_R1 %>% kable()
+```
+
+LoQ summary, reagent lot 2:
+
+```{r,results='hide'}
+RnR1066_R2<-RnR(Observed="ObsVAF",
+                VCvars=c("Plate"),
+                LevelVar="IntendedVAF",
+                RunID="Plate",
+                SampleID = "IntendedVAF",Call="SampleCall",
+                Data=PrecData %>% filter(Reagent==2))
+```
+
+```{r}
+LoQTab1066_R2 = RnR1066_R2$PrecProfData %>% select("LevelVar","Mean","ReprodVar") %>%
+  mutate(IntendedVAF=LevelVar,
+         MeanObsVAF=round(Mean,3),
+         Bias=Mean-LevelVar,
+         PercBias=round(Bias/LevelVar*100,1),
+         PercCV=round(sqrt(ReprodVar)/LevelVar*100,1),
+         TotalError=sqrt(ReprodVar+Bias^2),
+         PercTotalError=round(TotalError/LevelVar*100,1),
+         TotalErrorWG=2*sqrt(ReprodVar)+abs(Bias),
+         PercTotalErrorWG=round(TotalErrorWG/LevelVar*100,1)) %>% 
+  select("IntendedVAF","MeanObsVAF","PercBias","PercCV","PercTotalError","PercTotalErrorWG")
+
+LoQTab1066_R2 %>% kable()
+```
+
+LoQ summary, reagent lot 3:
+
+```{r,results='hide'}
+RnR1066_R3<-RnR(Observed="ObsVAF",
+                VCvars=c("Plate"),
+                LevelVar="IntendedVAF",
+                RunID="Plate",
+                SampleID = "IntendedVAF",Call="SampleCall",
+                Data=PrecData %>% filter(Reagent==3))
+```
+
+```{r}
+LoQTab1066_R3 = RnR1066_R3$PrecProfData %>% select("LevelVar","Mean","ReprodVar") %>%
+  mutate(IntendedVAF=LevelVar,
+         MeanObsVAF=round(Mean,3),
+         Bias=Mean-LevelVar,
+         PercBias=round(Bias/LevelVar*100,1),
+         PercCV=round(sqrt(ReprodVar)/LevelVar*100,1),
+         TotalError=sqrt(ReprodVar+Bias^2),
+         PercTotalError=round(TotalError/LevelVar*100,1),
+         TotalErrorWG=2*sqrt(ReprodVar)+abs(Bias),
+         PercTotalErrorWG=round(TotalErrorWG/LevelVar*100,1)) %>% 
+  select("IntendedVAF","MeanObsVAF","PercBias","PercCV","PercTotalError","PercTotalErrorWG")
+
+LoQTab1066_R3 %>% kable()
+```
+
+
+
+
+
+
+
